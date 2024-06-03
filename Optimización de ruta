@@ -1,0 +1,169 @@
+pip install pandas openpyxl scikit-learn googlemaps
+
+import pandas as pd
+import requests
+import os
+import matplotlib.pyplot as plt
+
+# Leer el archivo Excel
+file_path = r"C:\Users\dtole\OneDrive - Universidad Adolfo Ibanez\Desktop\Capston\LOCALES.xlsx"
+sheet_names = ['JUMBO', 'WALMART', 'UNIMARC', 'TOTTUS']
+
+dfs = pd.read_excel(file_path, sheet_name=sheet_names)
+
+# Verificar las primeras filas de cada hoja
+for sheet_name in sheet_names:
+    print(f"Datos de la hoja {sheet_name}:")
+    print(dfs[sheet_name].head())
+    print("\n")
+
+########
+
+# Leer el archivo Excel
+file_path = r"C:\Users\dtole\OneDrive - Universidad Adolfo Ibanez\Desktop\Capston\LOCALES.xlsx"
+sheet_names = ['JUMBO', 'WALMART', 'UNIMARC', 'TOTTUS']
+dfs = pd.read_excel(file_path, sheet_name=sheet_names)
+
+# Renombrar las columnas
+for sheet_name in sheet_names:
+    dfs[sheet_name].columns = ['NOMBRE LOCAL', 'CODIGO LOCAL', 'DIRECCION', 'COMUNA']
+
+# Función para obtener coordenadas usando una API de geocodificación
+def get_coordinates(address):
+    api_key = 'AIzaSyBYwpDCZbrBJh8zbcro1OScdEg0_Ap1I8I'  # Reemplaza con tu API Key
+    base_url = 'https://maps.googleapis.com/maps/api/geocode/json'
+    params = {'address': address, 'key': api_key}
+    response = requests.get(base_url, params=params)
+    if response.status_code == 200:
+        results = response.json().get('results')
+        if results:
+            location = results[0].get('geometry').get('location')
+            return location['lat'], location['lng']
+    return None, None
+
+# Normalización de direcciones
+def normalize_address(address):
+    address = address.upper()
+    address = re.sub(r'\bAV\.?\b', 'AVENIDA', address)
+    address = re.sub(r'\bST\.?\b', 'STREET', address)
+    address = re.sub(r'\bDR\.?\b', 'DOCTOR', address)
+    address = re.sub(r'\s+', ' ', address).strip()
+    return address
+
+# Añadir coordenadas a cada dirección en el DataFrame
+for sheet_name in sheet_names:
+    dfs[sheet_name]['DIRECCION_NORMALIZADA'] = dfs[sheet_name]['DIRECCION'].apply(normalize_address)
+    dfs[sheet_name]['LAT'], dfs[sheet_name]['LON'] = zip(*dfs[sheet_name]['DIRECCION_NORMALIZADA'].apply(get_coordinates))
+
+# Combinar todos los datos en un solo DataFrame
+df_combined = pd.concat(dfs.values(), ignore_index=True)
+
+# Remover filas con coordenadas no válidas
+df_combined.dropna(subset=['LAT', 'LON'], inplace=True)
+
+# Verificación visual de la pérdida de datos
+total_rows_before = sum(len(dfs[sheet_name]) for sheet_name in sheet_names)
+total_rows_after = len(df_combined)
+
+print(f"Total de filas antes de la geocodificación: {total_rows_before}")
+print(f"Total de filas después de la geocodificación: {total_rows_after}")
+
+# Mostrar los datos con y sin coordenadas nulas
+df_with_coordinates = df_combined.dropna(subset=['LAT', 'LON'])
+df_without_coordinates = df_combined[df_combined[['LAT', 'LON']].isnull().any(axis=1)]
+
+print("\nDatos con coordenadas válidas:")
+print(df_with_coordinates.head())
+
+print("\nDatos sin coordenadas (posible pérdida):")
+print(df_without_coordinates.head())
+
+# Reintentar geocodificación en df_without_coordinates
+def retry_geocoding(df):
+    lat_lon = df['DIRECCION'].apply(get_coordinates)
+    df['LAT'] = [lat for lat, lon in lat_lon]
+    df['LON'] = [lon for lat, lon in lat_lon]
+    return df
+
+df_without_coordinates_retry = retry_geocoding(df_without_coordinates.copy())
+
+# Combinar los datos con y sin coordenadas después del reintento
+df_final = pd.concat([df_with_coordinates, df_without_coordinates_retry.dropna(subset=['LAT', 'LON'])], ignore_index=True)
+df_final_missing = df_without_coordinates_retry[df_without_coordinates_retry[['LAT', 'LON']].isnull().any(axis=1)]
+
+# Mostrar los resultados después del reintento de geocodificación
+print("\nDatos después del reintento de geocodificación:")
+print(df_final.head())
+
+print("\nDatos aún sin coordenadas después del reintento:")
+print(df_final_missing.head())
+
+# Identificar y visualizar outliers
+lat_mean = df_final['LAT'].mean()
+lat_std = df_final['LAT'].std()
+lon_mean = df_final['LON'].mean()
+lon_std = df_final['LON'].std()
+
+# Usar 3 desviaciones estándar para identificar outliers
+df_final['LAT_OUTLIER'] = (df_final['LAT'] < lat_mean - 3*lat_std) | (df_final['LAT'] > lat_mean + 3*lat_std)
+df_final['LON_OUTLIER'] = (df_final['LON'] < lon_mean - 3*lon_std) | (df_final['LON'] > lon_mean + 3*lon_std)
+
+outliers = df_final[df_final['LAT_OUTLIER'] | df_final['LON_OUTLIER']]
+
+print("\nOutliers identificados:")
+print(outliers)
+
+# Visualización
+plt.figure(figsize=(10, 6))
+plt.scatter(df_final['LON'], df_final['LAT'], label='Datos', alpha=0.5)
+plt.scatter(outliers['LON'], outliers['LAT'], color='red', label='Outliers', alpha=0.7)
+plt.xlabel('Longitud')
+plt.ylabel('Latitud')
+plt.title('Geocodificación de Direcciones con Outliers')
+plt.legend()
+plt.show()
+
+######
+
+# import pandas as pd
+import requests
+import re
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
+
+# Función para realizar clustering
+def cluster_locations(df, n_clusters):
+    kmeans = KMeans(n_clusters=n_clusters)
+    df['cluster'] = kmeans.fit_predict(df[['LAT', 'LON']])
+    return df, kmeans
+
+# Número de clusters (puedes ajustar este número según tus necesidades)
+n_clusters = 5  # Ejemplo, puedes cambiar este valor
+
+# Realizar clustering
+df_final, kmeans = cluster_locations(df_final, n_clusters)
+
+# Visualización de clusters
+def plot_clusters(df, kmeans, n_clusters):
+    plt.figure(figsize=(10, 6))
+    colors = plt.cm.rainbow(np.linspace(0, 1, n_clusters))
+    for cluster in range(n_clusters):
+        cluster_points = df[df['cluster'] == cluster]
+        plt.scatter(cluster_points['LON'], cluster_points['LAT'], s=50, color=colors[cluster], label=f'Cluster {cluster}')
+    plt.scatter(kmeans.cluster_centers_[:, 1], kmeans.cluster_centers_[:, 0], s=200, color='black', marker='X', label='Centroids')
+    plt.xlabel('Longitud')
+    plt.ylabel('Latitud')
+    plt.title(f'Clustering de ubicaciones con K-means ({n_clusters} clusters)')
+    plt.legend()
+    plt.show()
+
+# Mostrar resultados y visualizar clusters
+print(df_final.head())
+
+# Visualizar clusters
+plot_clusters(df_final, kmeans, n_clusters)
+
+# Guardar resultados en un archivo Excel
+output_file_path = 'C:/Users/dtole/OneDrive - Universidad Adolfo Ibanez/Desktop/Capston/LOCALES_Clustered.xlsx'
+df_final.to_excel(output_file_path, index=False)
+print(f"Archivo con clusters guardado exitosamente en: {output_file_path}")
